@@ -1,6 +1,6 @@
 module github.com/cryptera-device-security/libpkcs11ks
 
-go 1.23.2
+go 1.20
 
 require (
 	github.com/miekg/pkcs11 v1.1.1
