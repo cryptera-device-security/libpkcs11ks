@@ -62,6 +62,7 @@ func (b KeyServerBackend) Initialize() error {
 
 	certs, err := getCerts(_client, _token)
 	if err != nil {
+		fmt.Println(err)
 		fmt.Println("Error: getCerts failed")
 		return pkcs11.Error(pkcs11.CKR_DEVICE_ERROR)
 	}

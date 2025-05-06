@@ -84,13 +84,14 @@ func getCerts(client http.Client, token string) ([]KeyServerCert, error) {
 	}
 	defer res.Body.Close()
 
-	if res.StatusCode != 200 {
-		return nil, errors.New("incorrtect status code")
-	}
-
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
+	}
+
+	if res.StatusCode != 200 {
+		fmt.Println(body)
+		return nil, errors.New(fmt.Sprint("incorrect status code:", res.StatusCode))
 	}
 
 	var certs []KeyServerCert

@@ -14,7 +14,7 @@ type pkcsObject []*pkcs11.Attribute
 func toBytes(value int, size int) []byte {
 	b := make([]byte, size)
 
-	for i := range size {
+	for i := 0; i < size; i++ {
 		b[size-i-1] = byte(value)
 		value >>= 8
 	}
