@@ -30,6 +30,8 @@ func createX509Cert(id int, label, subject string, data []byte) pkcsObject {
 		pkcs11.NewAttribute(pkcs11.CKA_SUBJECT, subject),
 		pkcs11.NewAttribute(pkcs11.CKA_ID, id),
 		pkcs11.NewAttribute(pkcs11.CKA_VALUE, data),
+		pkcs11.NewAttribute(pkcs11.CKA_TRUSTED, false),
+		pkcs11.NewAttribute(pkcs11.CKA_MODIFIABLE, false),
 	}
 }
 
@@ -43,6 +45,12 @@ func createECPrivateKey(id int, label string, ecPoint, ecParams []byte) pkcsObje
 		pkcs11.NewAttribute(pkcs11.CKA_EC_POINT, ecPoint),
 		pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, ecParams),
 		pkcs11.NewAttribute(pkcs11.CKA_ALWAYS_AUTHENTICATE, false),
+		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+		pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, false),
+		pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
+		pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
+		pkcs11.NewAttribute(pkcs11.CKA_MODIFIABLE, false),
+		pkcs11.NewAttribute(pkcs11.CKA_TRUSTED, false), 
 	}
 }
 
@@ -56,6 +64,12 @@ func createRSAPrivateKey(id int, label string, modulus, exponent []byte) pkcsObj
 		pkcs11.NewAttribute(pkcs11.CKA_MODULUS, modulus),
 		pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, exponent),
 		pkcs11.NewAttribute(pkcs11.CKA_ALWAYS_AUTHENTICATE, false),
+		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+		pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, false),
+		pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
+		pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
+		pkcs11.NewAttribute(pkcs11.CKA_MODIFIABLE, false),
+		pkcs11.NewAttribute(pkcs11.CKA_TRUSTED, false), 
 	}
 }
 
@@ -99,13 +113,11 @@ func parseCerts(certs []KeyServerCert) []pkcsObject {
 		if err != nil {
 			continue
 		}
-		id++
 
-		x509crt := createX509Cert(id, crt.Keyid, crt.Keyinfo, block.Bytes)
-		id++
-
+		x509crt := createX509Cert(id, crt.Keyid, crt.Keyinfo, block.Bytes)	
 		objs = append(objs, pk)
 		objs = append(objs, x509crt)
+		id++
 	}
 
 	return objs

@@ -8,7 +8,7 @@ import (
 	"os"
 	"reflect"
 	"time"
-
+	"strings"
 	"github.com/miekg/pkcs11"
 	"github.com/namecoin/pkcs11mod"
 )
@@ -418,6 +418,9 @@ func (b KeyServerBackend) SignInit(sessHandle pkcs11.SessionHandle, mechanisms [
 func (b KeyServerBackend) Sign(sessHandle pkcs11.SessionHandle, data []byte) ([]byte, error) {
 	op := _cfg["op-id"]
 	desc := _cfg["op-desc"]
+	if len(desc) < 8 {
+		desc += strings.Repeat("-", 8-len(desc))
+	}
 	hash := hex.EncodeToString(data)
 
 	sign, err := getSign(_client, _token, op, desc, _signKey, hash, _inputpadding, _signFormat)
