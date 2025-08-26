@@ -7,10 +7,11 @@ import (
 	"net/http"
 	"os"
 	"reflect"
-	"time"
 	"strings"
+	"time"
+
+	"github.com/cryptera-device-security/pkcs11mod"
 	"github.com/miekg/pkcs11"
-	"github.com/namecoin/pkcs11mod"
 )
 
 type KeyServerBackend struct {
