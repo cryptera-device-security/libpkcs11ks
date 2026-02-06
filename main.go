@@ -40,8 +40,21 @@ func (b KeyServerBackend) Initialize() error {
 
 	_cfg = LoadConfig()
 
+	timeoutStr := os.Getenv("KSC_HTTP_CLIENT_TIMEOUT")
+	timeout := time.Second * 10 // Default timeout in seconds
+	if timeoutStr != "" {
+		if parsedTimeout, err := time.ParseDuration(timeoutStr); err == nil {
+			timeout = parsedTimeout
+			fmt.Printf("Using timeout from environment variable: %s\n", timeout)
+		} else {
+			fmt.Println("Invalid HTTP_CLIENT_TIMEOUT value, using default timeout")
+		}
+	} else {
+		fmt.Println("No timeout set in environment variable, using default timeout")
+	}
+
 	client := http.Client{
-		Timeout: time.Second * 2,
+		Timeout: timeout,
 	}
 	_client = client
 
