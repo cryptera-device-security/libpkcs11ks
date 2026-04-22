@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cryptera-device-security/pkcs11mod"
@@ -24,14 +25,29 @@ type KeyServerBackend struct {
 
 var _initialized bool
 var _objects []pkcsObject
-var _findIdx int
-var _findObjects []int
-var _signKey string
-var _signFormat string
-var _inputpadding string
 var _token string
 var _client http.Client
 var _cfg Config
+var _sessionMu sync.Mutex
+var _nextSessionHandle pkcs11.SessionHandle = 1
+var _sessions = map[pkcs11.SessionHandle]*sessionState{}
+
+type sessionState struct {
+	findIdx      int
+	findObjects  []int
+	signKey      string
+	signFormat   string
+	inputPadding string
+	rw           bool
+	loggedIn     bool
+}
+
+func boolToFlag(enabled bool, flag uint) uint {
+	if enabled {
+		return flag
+	}
+	return 0
+}
 
 func (b KeyServerBackend) Initialize() error {
 	if _initialized {
@@ -92,6 +108,10 @@ func (b KeyServerBackend) Finalize() error {
 		return pkcs11.Error(pkcs11.CKR_CRYPTOKI_NOT_INITIALIZED)
 	}
 
+	_sessionMu.Lock()
+	_sessions = map[pkcs11.SessionHandle]*sessionState{}
+	_nextSessionHandle = 1
+	_sessionMu.Unlock()
 	_initialized = false
 	return nil
 }
@@ -202,21 +222,66 @@ func (b KeyServerBackend) SetPIN(pkcs11.SessionHandle, string, string) error {
 	return pkcs11.Error(pkcs11.CKR_FUNCTION_NOT_SUPPORTED)
 }
 
-func (b KeyServerBackend) OpenSession(uint, uint) (pkcs11.SessionHandle, error) {
-	return 0, nil
+func (b KeyServerBackend) OpenSession(_ uint, flags uint) (pkcs11.SessionHandle, error) {
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	handle := _nextSessionHandle
+	_nextSessionHandle++
+	_sessions[handle] = &sessionState{
+		rw: (flags & pkcs11.CKF_RW_SESSION) != 0,
+	}
+
+	return handle, nil
 }
 
-func (b KeyServerBackend) CloseSession(pkcs11.SessionHandle) error {
-	return pkcs11.Error(pkcs11.CKR_FUNCTION_NOT_SUPPORTED)
+func (b KeyServerBackend) CloseSession(handle pkcs11.SessionHandle) error {
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	if _, ok := _sessions[handle]; !ok {
+		return pkcs11.Error(pkcs11.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	delete(_sessions, handle)
+	return nil
 }
 
 func (b KeyServerBackend) CloseAllSessions(uint) error {
-	//fmt.Println(">>> CloseAllSessions")
-	return pkcs11.Error(pkcs11.CKR_FUNCTION_NOT_SUPPORTED)
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	_sessions = map[pkcs11.SessionHandle]*sessionState{}
+	return nil
 }
 
-func (b KeyServerBackend) GetSessionInfo(pkcs11.SessionHandle) (pkcs11.SessionInfo, error) {
-	return pkcs11.SessionInfo{}, pkcs11.Error(pkcs11.CKR_FUNCTION_NOT_SUPPORTED)
+func (b KeyServerBackend) GetSessionInfo(handle pkcs11.SessionHandle) (pkcs11.SessionInfo, error) {
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	state, ok := _sessions[handle]
+	if !ok {
+		return pkcs11.SessionInfo{}, pkcs11.Error(pkcs11.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	sessionStateValue := uint(pkcs11.CKS_RO_PUBLIC_SESSION)
+	if state.rw {
+		sessionStateValue = pkcs11.CKS_RW_PUBLIC_SESSION
+	}
+	if state.loggedIn {
+		if state.rw {
+			sessionStateValue = pkcs11.CKS_RW_USER_FUNCTIONS
+		} else {
+			sessionStateValue = pkcs11.CKS_RO_USER_FUNCTIONS
+		}
+	}
+
+	return pkcs11.SessionInfo{
+		SlotID:      0,
+		State:       sessionStateValue,
+		Flags:       pkcs11.CKF_SERIAL_SESSION | boolToFlag(state.rw, pkcs11.CKF_RW_SESSION),
+		DeviceError: 0,
+	}, nil
 }
 
 func (b KeyServerBackend) GetOperationState(pkcs11.SessionHandle) ([]byte, error) {
@@ -227,11 +292,29 @@ func (b KeyServerBackend) SetOperationState(pkcs11.SessionHandle, []byte, pkcs11
 	return pkcs11.Error(pkcs11.CKR_FUNCTION_NOT_SUPPORTED)
 }
 
-func (b KeyServerBackend) Login(pkcs11.SessionHandle, uint, string) error {
+func (b KeyServerBackend) Login(handle pkcs11.SessionHandle, _ uint, _ string) error {
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	state, ok := _sessions[handle]
+	if !ok {
+		return pkcs11.Error(pkcs11.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	state.loggedIn = true
 	return nil
 }
 
-func (b KeyServerBackend) Logout(pkcs11.SessionHandle) error {
+func (b KeyServerBackend) Logout(handle pkcs11.SessionHandle) error {
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	state, ok := _sessions[handle]
+	if !ok {
+		return pkcs11.Error(pkcs11.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	state.loggedIn = false
 	return nil
 }
 
@@ -260,18 +343,29 @@ func (b KeyServerBackend) GetAttributeValue(sessHandle pkcs11.SessionHandle, obj
 		return nil, pkcs11.Error(pkcs11.CKR_OBJECT_HANDLE_INVALID)
 	}
 
-	results := make([]*pkcs11.Attribute, 0, len(temp))
+	results := make([]*pkcs11.Attribute, len(temp))
+	missingAttr := false
 
-	for _, t := range temp {
+	for i, t := range temp {
+		results[i] = &pkcs11.Attribute{
+			Type:  t.Type,
+			Value: nil,
+		}
+
 		for _, attr := range _objects[objId] {
 			if attr.Type == t.Type {
-				results = append(results, attr)
+				results[i] = attr
+				break
 			}
+		}
+
+		if results[i].Value == nil {
+			missingAttr = true
 		}
 	}
 
-	if len(results) == 0 {
-		results = append(results, pkcs11.NewAttribute(0, nil))
+	if missingAttr {
+		return results, pkcs11.Error(pkcs11.CKR_ATTRIBUTE_TYPE_INVALID)
 	}
 
 	return results, nil
@@ -308,29 +402,55 @@ func objectMatch(obj, temp []*pkcs11.Attribute) bool {
 }
 
 func (b KeyServerBackend) FindObjectsInit(session pkcs11.SessionHandle, temp []*pkcs11.Attribute) error {
-	_findIdx = 0
-	_findObjects = make([]int, 0, len(_objects))
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	state, ok := _sessions[session]
+	if !ok {
+		return pkcs11.Error(pkcs11.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	state.findIdx = 0
+	state.findObjects = make([]int, 0, len(_objects))
 
 	for i, o := range _objects {
 		if objectMatch(o, temp) {
-			_findObjects = append(_findObjects, i)
+			state.findObjects = append(state.findObjects, i)
 		}
 	}
 	return nil
 }
 
 func (b KeyServerBackend) FindObjects(session pkcs11.SessionHandle, max int) ([]pkcs11.ObjectHandle, bool, error) {
-	if _findIdx >= len(_findObjects) {
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	state, ok := _sessions[session]
+	if !ok {
+		return nil, false, pkcs11.Error(pkcs11.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	if state.findIdx >= len(state.findObjects) {
 		return nil, false, nil
 	}
 
-	handle := pkcs11.ObjectHandle(_findObjects[_findIdx] + 1)
-	_findIdx++
+	handle := pkcs11.ObjectHandle(state.findObjects[state.findIdx] + 1)
+	state.findIdx++
 
 	return []pkcs11.ObjectHandle{handle}, false, nil
 }
 
 func (b KeyServerBackend) FindObjectsFinal(session pkcs11.SessionHandle) error {
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	state, ok := _sessions[session]
+	if !ok {
+		return pkcs11.Error(pkcs11.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	state.findIdx = 0
+	state.findObjects = nil
 	return nil
 }
 
@@ -405,6 +525,14 @@ func (b KeyServerBackend) SignInit(sessHandle pkcs11.SessionHandle, mechanisms [
 		return pkcs11.Error(pkcs11.CKR_MECHANISM_INVALID)
 	}
 
+	_sessionMu.Lock()
+	defer _sessionMu.Unlock()
+
+	state, ok := _sessions[sessHandle]
+	if !ok {
+		return pkcs11.Error(pkcs11.CKR_SESSION_HANDLE_INVALID)
+	}
+
 	key := int(objHandle) - 1
 	label, ok := getAttribute(_objects[key], pkcs11.CKA_LABEL)
 	if !ok {
@@ -417,19 +545,26 @@ func (b KeyServerBackend) SignInit(sessHandle pkcs11.SessionHandle, mechanisms [
 
 	kt := binary.LittleEndian.Uint64(ktype)
 	if kt == pkcs11.CKK_RSA {
-		_signFormat = "asn1"
-		_inputpadding = "digestinfo"
+		state.signFormat = "asn1"
+		state.inputPadding = "digestinfo"
 	} else {
-		_signFormat = "p1363"
-		_inputpadding = "none"
+		state.signFormat = "p1363"
+		state.inputPadding = "none"
 	}
 
-	_signKey = string(label)
+	state.signKey = string(label)
 
 	return nil
 }
 
 func (b KeyServerBackend) Sign(sessHandle pkcs11.SessionHandle, data []byte) ([]byte, error) {
+	_sessionMu.Lock()
+	state, ok := _sessions[sessHandle]
+	_sessionMu.Unlock()
+	if !ok {
+		return nil, pkcs11.Error(pkcs11.CKR_SESSION_HANDLE_INVALID)
+	}
+
 	op := _cfg["op-id"]
 	desc := _cfg["op-desc"]
 	if len(desc) < 8 {
@@ -437,7 +572,7 @@ func (b KeyServerBackend) Sign(sessHandle pkcs11.SessionHandle, data []byte) ([]
 	}
 	hash := hex.EncodeToString(data)
 
-	sign, err := getSign(_client, _token, op, desc, _signKey, hash, _inputpadding, _signFormat)
+	sign, err := getSign(_client, _token, op, desc, state.signKey, hash, state.inputPadding, state.signFormat)
 	if err != nil {
 		fmt.Println("getSign error, desc:" + desc + " odid:" + op)
 		return nil, err
