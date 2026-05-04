@@ -10,7 +10,7 @@ COPY . ./libpkcs11ks
 
 # Prepare pkcs11mod module
 RUN cd pkcs11mod && \
-    go mod init github.com/cryptera-device-security/pkcs11mod && \
+    if [ ! -f go.mod ]; then go mod init github.com/cryptera-device-security/pkcs11mod; fi && \
     go mod tidy && \
     go generate ./...
 
